@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# caches
+.pytest_cache/
+.hf_cache/
+
+# model weights (large, downloaded locally)
+data/models/
+data/**/*.safetensors
+data/**/*.bin
+
+# experiment outputs
+results/
+experiments/
+
+PLAN.md

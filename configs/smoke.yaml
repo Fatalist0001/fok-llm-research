@@ -1,0 +1,20 @@
+name: fok_smoke
+seed: 42
+model_path: data/models/Qwen3.5-2B
+layers: 0,6,12,18,24
+max_new_tokens: 24
+temperature: 0.0
+dtype: bfloat16
+device: cuda
+dataset: synthetic_knowledge
+dataset_config:
+  n_per_class: 20
+  seed: 7
+train_ratio: 0.6
+val_ratio: 0.2
+representation: last_token
+last_k: 4
+probe: logistic
+probe_C: 1.0
+target: knowledge_state
+results_dir: results

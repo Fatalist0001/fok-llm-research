@@ -1,0 +1,39 @@
+# Example FOK experiment configuration.
+#
+# Every stage (extract / evaluate / analyze / plot) reads this one file.
+# Any value can be overridden on the command line, e.g.:
+#   fok run --config configs/fok.yaml --dataset synthetic_knowledge --dataset-param n_per_class=150
+#
+# Keys must match the ExperimentConfig dataclass (see src/fok/config.py).
+
+name: fok_qwen35
+seed: 42
+
+# --- model ---
+model_path: data/models/Qwen3.5-2B   # local path (see scripts/download_model.py)
+layers: all                          # 'all' or e.g. '0,5,10,15,20,24'
+max_new_tokens: 96
+temperature: 0.0                     # 0 => greedy (deterministic)
+dtype: bfloat16
+device: cuda
+
+# --- dataset ---
+dataset: synthetic_knowledge         # fok_trivia | synthetic_knowledge | info_variant | answerability
+dataset_config:
+  n_per_class: 150
+  seed: 7
+train_ratio: 0.6
+val_ratio: 0.2                       # remainder is test
+
+# --- representation ---
+representation: last_token           # last_token | mean | last_k_mean
+last_k: 4
+
+# --- probe ---
+probe: logistic                      # logistic | ridge | mlp
+probe_C: 1.0
+
+# --- experiment / target ---
+target: knowledge_state
+
+results_dir: results
