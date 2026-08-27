@@ -1,202 +1,194 @@
-# FOK Research
+# Исследование FOK в LLM
 
-A reproducible research pipeline investigating whether a dense language model's
-**internal (per-layer) hidden states** carry a *Feeling of Knowing* (FOK)
-signal — information about whether the model "knows" — that is **distinct from**
-both token-level confidence and from final correctness.
+Воспроизводимый исследовательский конвейер, проверяющий, содержит ли **внутреннее состояние** (скрытые состояния по слоям) плотной языковой модели сигнал *Feeling of Knowing* (FOK) — информацию о том, «знает» ли модель — **отличный** и от обычной уверенности по токенам, и от фактической правильности ответа.
 
-The pipeline is model- and dataset-agnostic. It currently targets
-`Qwen/Qwen3.5-2B` (a dense, non-MoE, native-transformers model that exposes
-per-layer hidden states) but works with any dense Hugging Face CausalLM that
-supports `output_hidden_states=True`.
+Конвейер не привязан к конкретной модели или датасету. Сейчас он настроен на `Qwen/Qwen3.5-2B` (плотная, не-MoE, натив-трансформерная модель, отдающая скрытые состояния по слоям), но работает с любой плотной Hugging Face CausalLM, поддерживающей `output_hidden_states=True`.
 
 ---
 
-## The research question
+## Вопрос исследования
 
-When we ask a model a question, prior to writing any answer, does its internal
-state at some layer(s) already "know" whether it can answer? If yes, is that
-signal:
+Когда мы задаём модели вопрос, уже **до** генерации ответа — знает ли её внутреннее состояние на каком-то слое, сможет ли она ответить? Если да, то:
 
-1. **per-layer** — localized to particular layers (§4, §12),
-2. **distinct from confidence** — not merely a re-encoding of the top-token
-   probability / log-probability (§8),
-3. **distinct from correctness** — measurable before the answer, and for
-   errors and unanswerable questions as well (§11), and
-4. **stable across time points** — present before/while/after producing the
-   answer (§9)?
+1. **по слоям ли сигнал** — локализован ли на конкретных слоях (§4, §12);
+2. **отличается ли от confidence** — не является ли просто перекодировкой вероятности верхнего токена / log-probability (§8);
+3. **отличается ли от correctness** — измерим ли он до ответа, а также на ошибках и неотвечаемых вопросах (§11);
+4. **устойчив ли во времени** — присутствует ли до / во время / после генерации ответа (§9)?
 
-We probe these questions with **linear read-outs** (plus a secondary MLP) — a
-*diagnostic* that asks "is this information linearly decodable from the hidden
-states?", never a claim that linear separability *is* the FOK experience.
+На эти вопросы мы отвечаем с помощью **линейных считывателей (probes)** (плюс вторичный MLP) — это *диагностический* инструмент, отвечающий «линейно ли извлекается эта информация из скрытых состояний», но **никогда не** утверждающий, что линейная отделимость и есть FOK.
 
-## Key design principle: keep the three quantities separate
+## Главный принцип: не смешивать три величины
 
-| Quantity        | What it is                                          | How we measure it                       |
-|-----------------|-----------------------------------------------------|-----------------------------------------|
-| FOK signal      | internal "knows it can answer" state (the object of research) | linear probe reads hidden states; tested vs. chance (§13) |
-| Confidence      | self-reported certainty from the generated text     | token probs, avg/seq log-prob, entropy (baseline, §8)    |
-| Correctness     | did the produced answer match a ground-truth answer  | string match against `correct_answer`   |
+| Величина      | Что это | Как измеряем |
+|---------------|---------|--------------|
+| FOK-сигнал    | внутреннее состояние «знает, что может ответить» (объект исследования) | линейный probe по скрытым состояниям; проверка против шанса (§13) |
+| Confidence    | самоотчётная уверенность по сгенерированному тексту | вероятности токенов, avg/seq log-prob, энтропия (baseline, §8) |
+| Correctness   | совпал ли ответ с эталоном | сопоставление строк с `correct_answer` |
 
-Confidence and correctness are recorded as **baselines compared to** the hidden
-state probe; the probe's *input-condition target* (e.g. `knowable`,
-`info_relevant`, `answerable`) is chosen to be **independent of the produced
-text**, keeping FOK separable from correctness by construction.
+Confidence и correctness записываются как **baselines для сравнения** с probe по скрытым состояниям, а *входное условие*-мишень probe (например, `knowable`, `info_relevant`, `answerable`) выбирается **независимо от сгенерированного текста** — поэтому FOK остаётся отделимым от correctness по построению.
 
 ---
 
-## Pipeline
+## Конвейер
 
 ```
 extract ──> evaluate ──> analyze ──> plot
 ```
 
-Each stage is driven by one YAML config (`configs/fok.yaml`) and writes into
-`results/<run_id>/`.
+Каждый этап управляется одним YAML-конфигом (`configs/fok.yaml`) и пишет в `results/<run_id>/`.
 
-| Stage      | Input                     | Outputs                                                        |
-|------------|---------------------------|---------------------------------------------------------------|
-| `extract`  | model + dataset           | `features/examples.csv`, `features/hidden_{A,B,C}.npy`, meta   |
-| `evaluate` | features                  | `eval/probe_results.csv`, `eval/confidence_baselines.csv`      |
-| `analyze`  | features + eval           | `analysis/{per_layer_auc,confidence_contrast,control,timepoints,multidim}.csv` |
-| `plot`     | analysis                  | `plots/*.png`                                                  |
+| Этап       | Вход                     | Выход                                                           |
+|------------|--------------------------|-----------------------------------------------------------------|
+| `extract`  | модель + датасет         | `features/examples.csv`, `features/hidden_{A,B,C}.npy`, метаданные |
+| `evaluate` | features                 | `eval/probe_results.csv`, `eval/confidence_baselines.csv`        |
+| `analyze`  | features + eval          | `analysis/{per_layer_auc,confidence_contrast,control,timepoints,multidim}.csv` |
+| `plot`     | analysis                 | `plots/*.png`                                                    |
 
 ### extract
-Runs the model over every example and, for each, stores:
-- **hidden states** at time point **A** (after the question, before
-  generation), and optionally **B** (after `b_tokens` answer tokens) and **C**
-  (after the full answer) — §9. Only the configured layers and representation
-  are kept, per the "don't store activations bigger than needed" rule.
-- **the generated answer** and its confidence baselines,
-- **correctness** vs. `correct_answer`,
-- the **input-condition target labels** from the dataset (e.g. `knowable`,
-  `info_relevant`, `answerable`).
+Прогоняет модель по каждому примеру и сохраняет:
+- **скрытые состояния** в точке **A** (после вопроса, до генерации) и опционально в точке **B** (после `b_tokens` токенов ответа) и **C** (после полного ответа) — §9. Сохраняются только выбранные слои и representation, согласно правилу «не хранить activation dumps больше необходимого».
+- **сгенерированный ответ** и его confidence-базовые линии,
+- **корректность** по `correct_answer`,
+- **пометки входного условия** из датасета (например, `knowable`, `info_relevant`, `answerable`).
 
 ### evaluate
-Fits one probe **per layer** (on train) and scores it on val/test. Also fits
-tiny probes on each **scalar confidence feature** (best-case single scalar
-comparison for §8).
+Обучает по одному probe **на слой** (на train) и оценивает на val/test. Также обучает маленькие probe на каждом **скалярном признаке confidence** (наилучший скалярный baseline для §8).
 
 ### analyze
-- `per_layer_auc` — signal as a function of layer (§4, §12).
-- `confidence_contrast` — best hidden layer vs best scalar confidence (§8).
-- `control` — permutation null: shuffle labels, refit, is the observed AUC
-  above the 95th percentile of chance? (§13).
-- `timepoints` — AUC at A vs B vs C (§9).
-- `multidim` — separability of the FOK target vs. correctness / other
-  input-condition targets, as a decoupling check (§11).
+- `per_layer_auc` — сигнал как функция слоя (§4, §12);
+- `confidence_contrast` — лучший слой скрытых состояний против лучшего скалярного confidence (§8);
+- `control` — перестановочный нуль: перемешивает метки, переобучает — выше ли наблюдаемый AUC 95-го перцентиля шанса? (§13);
+- `timepoints` — AUC в A vs B vs C (§9);
+- `multidim` — отделимость FOK-мишени от correctness / других входных условий как проверка расщепления (§11).
 
 ### plot
-Renders the analysis CSVs to PNG figures.
+Превращает CSV анализа в PNG-графики.
 
 ---
 
-## Usage
+## Использование
 
 ```bash
-# install (this repo's venv; pick a torch build that fits your GPU)
+# установка (venv этого репозитория; выбери build torch под свою GPU)
 uv venv .venv
 uv pip install -e ".[analysis,test]"
 
-# download the default dense model (already done in this workspace)
+# загрузка стандартной плотной модели (уже сделано в этом воркспейсе)
 fok download-model --repo Qwen/Qwen3.5-2B
 
-# full run with a config
+# полный прогон по конфигу
 fok run --config configs/fok.yaml
 
-# quick smoke run (small dataset, subset of layers)
+# быстрый smoke-прогон (маленький датасет, подмножество слоёв)
 fok run --config configs/smoke.yaml
 
-# or drive each stage separately
+# или каждый этап по отдельности
 fok extract  --config configs/fok.yaml
 fok evaluate --config configs/fok.yaml
 fok analyze  --config configs/fok.yaml --n-perm 200
 fok plot     --config configs/fok.yaml
 ```
 
-Command-line overrides (any value can be overridden without editing the config):
+Переопределение параметров из командной строки (без правки конфига):
 
 ```bash
 fok run -c configs/fok.yaml \
     --dataset info_variant \
     --layers all \
-    --seed 7
+    --seed 7 \
     --dataset-param b_tokens=8
 ```
 
-Notes:
-- `--dataset-param capture_B=true` turns on B/C snapshot capture (needed for
-  `analysis/timepoints`); this is slower (extra forward passes).
-- `temperature: 0.0` gives deterministic (greedy) generation so answers and
-  confidence are comparable across examples.
+Примечания:
+- `--dataset-param capture_B=true` включает съём точек B/C (нужно для `analysis/timepoints`); это медленнее (лишние forward-проходы).
+- `temperature: 0.0` даёт детерминированную (жадную) генерацию, чтобы ответы и confidence были сопоставимы между примерами.
 
 ---
 
-## Datasets
+## Датасеты
 
-Each dataset exposes one or more binary **input-condition targets** that are
-independent of the produced text:
+Каждый датасет задаёт одну или несколько бинарных **мишеней входного условия**, независимых от сгенерированного текста:
 
-| Dataset              | Target            | Design |
-|----------------------|-------------------|--------|
-| `fok_trivia`         | `knowable`        | curated pairs of well-known (knowable) and fabricated (unknowable) questions |
-| `synthetic_knowledge`| `knowable`        | procedurally scaled: fact banks (knowable) vs invented-entity questions (unknowable) |
-| `info_variant`       | `info_relevant`   | the same base question under 4 conditions: no / relevant / irrelevant / misleading info (FOK-mechanism experiment) |
-| `answerability`      | `answerable`      | cleanly answerable vs unanswerable questions |
+| Датасет               | Мишень           | Дизайн |
+|-----------------------|------------------|--------|
+| `fok_trivia`          | `knowable`       | подобранные пары: общеизвестные (knowable) и выдуманные (unknowable) вопросы |
+| `synthetic_knowledge` | `knowable`       | процедурный масштаб: банки фактов (knowable) против вопросов о выдуманных сущностях (unknowable) |
+| `info_variant`        | `info_relevant`  | один и тот же базовый вопрос в 4 условиях: без инфо / релевантно / нерелевантно / вводяще в заблуждение (эксперимент по механике FOK) |
+| `answerability`       | `answerable`     | чётко отвечаемые против неотвечаемых вопросов |
 
-Splits are assigned deterministically by hashing a stable key (the question
-text, or the base-question id for `info_variant`) so that near-identical
-questions never straddle train and test.
+Сплиты назначаются детерминированно по хэшу стабильного ключа (текста вопроса или id базового вопроса для `info_variant`), чтобы почти одинаковые вопросы не попадали одновременно в train и test.
 
 ---
 
-## Configuration
+## Конфигурация
 
-The full set of keys (see `src/fok/config.py::ExperimentConfig`):
+Полный набор ключей (см. `src/fok/config.py::ExperimentConfig`):
 
-| Key             | Default | Meaning                                        |
-|-----------------|---------|------------------------------------------------|
-| `model_path`    | `data/models/Qwen3.5-2B` | local path to the model |
-| `layers`        | `all`   | `'all'` or `'0,6,12,18,24'` layer selector      |
-| `max_new_tokens`| `96`    | max generated tokens                           |
-| `temperature`   | `0.0`   | 0 => greedy                                    |
-| `dtype`         | `bfloat16` | model dtype                                  |
-| `device`        | `cuda`  | `cuda` or `cpu`                                |
-| `dataset`       | `fok_trivia` | dataset name                               |
-| `dataset_config`| `{}`    | dataset params (e.g. `n_per_class`)            |
-| `representation`| `last_token` | `last_token` / `mean` / `last_k_mean`      |
-| `probe`         | `logistic` | `logistic` / `ridge` / `mlp`                 |
-| `probe_C`       | `1.0`   | inverse regularization strength               |
+| Ключ             | По умолчанию             | Смысл                                  |
+|------------------|--------------------------|----------------------------------------|
+| `model_path`     | `data/models/Qwen3.5-2B` | локальный путь к модели                |
+| `layers`         | `all`                    | `'all'` или `'0,6,12,18,24'` селектор слоёв |
+| `max_new_tokens` | `96`                     | макс. число генерируемых токенов       |
+| `temperature`    | `0.0`                    | 0 => жадная генерация                  |
+| `dtype`          | `bfloat16`               | dtype модели                          |
+| `device`         | `cuda`                   | `cuda` или `cpu`                       |
+| `dataset`        | `fok_trivia`             | имя датасета                           |
+| `dataset_config` | `{}`                     | параметры датасета (например, `n_per_class`) |
+| `representation` | `last_token`             | `last_token` / `mean` / `last_k_mean`  |
+| `probe`          | `logistic`               | `logistic` / `ridge` / `mlp`           |
+| `probe_C`        | `1.0`                    | обратная сила регуляризации            |
 
 ---
 
-## Defensibility / controls
+## Защита от ошибок / контрольные проверки
 
-- **No train/test leakage**: split keys are hashed, near-identical questions
-  stay together and out of overlapping splits.
-- **Deterministic generation**: greedy decoding keeps answers comparable.
-- **Permutation control** (§13): any reported "signal" is compared to a null
-  distribution from shuffled labels.
-- **Separate baselines**: confidence and correctness are never conflated with
-  the hidden-state probe.
+- **Нет утечки train/test**: ключи сплитов хэшируются, почти одинаковые вопросы остаются вместе и не попадают в пересекающиеся сплиты.
+- **Детерминированная генерация**: жадное декодирование делает ответы сопоставимыми.
+- **Перестановочный контроль** (§13): любой заявленный «сигнал» сравнивается с нулевым распределением по перемешанным меткам.
+- **Отдельные baselines**: confidence и correctness никогда не смешиваются с probe по скрытым состояниям.
 
-## Project layout
+## Что сохраняется и как читать результаты
+
+Все результаты — в `results/<run_id>/`:
+
+- `features/examples.csv` — по строке на пример: id, вопрос, сплит, ответ, уверенность (avg/seq log-prob, энтропии, top1), корректность и метки входных условий.
+- `eval/probe_results.csv` — по строке на (мишень, слой): AUC/f1/acc на val и test. **Выше 0.5 — выше шанса.**
+- `eval/confidence_baselines.csv` — насколько каждый скалярный признак уверенности предсказывает ту же мишень.
+- `analysis/control.csv` — `real_test_auc` против `null_95`: сигнал считается **реальным**, только если AUC существенно выше шанса (и p-value мал).
+
+Как читать графики:
+- `per_layer_auc.png` — по горизонтали слои, по вертикали AUC; где кривая поднимается выше 0.5, там линейно считывается мишень.
+- `confidence_contrast.png` — сравнение «лучший слой» vs «лучший скалярный confidence»: если столбик слоя заметно выше, скрытые состояния дают больше, чем обычная уверенность.
+- `control.png` — реальный AUC против 95-го перцентиля перестановочного нуля; сигнал интерпретируем, только если красный (null) столбик заметно ниже реального.
+
+---
+
+## Структура проекта
 
 ```
-configs/      sample YAML configs
-data/models/  downloaded models (git-ignored)
-results/      per-run artifacts (git-ignored)
-scripts/      model downloader
+configs/      примеры YAML-конфигов
+data/models/  скачанные модели (в .gitignore)
+results/      артефакты прогонов (в .gitignore)
+scripts/      загрузчик модели
 src/fok/
-  config.py        ExperimentConfig (single source of truth)
-  utils.py         seeds / io helpers
-  model/backend.py Hugging Face dense backend (hidden states + confidence)
-  datasets/        dataset interface + built-in datasets
-  extraction/      collector + answer checking
-  probes/          linear / MLP probes
-  evaluation/      per-layer metrics + confidence baselines
+  config.py        ExperimentConfig (единый источник истины)
+  utils.py         seed'ы / io-хелперы
+  model/backend.py HF-бэкенд плотной модели (hidden states + confidence)
+  datasets/        интерфейс датасетов + встроенные датасеты
+  extraction/      коллектор + проверка ответов
+  probes/          линейный / MLP probe
+  evaluation/      послойные метрики + confidence-baselines
   analysis/        control, timepoints, multidim, per-layer
-  visualization/   plots
+  visualization/   графики
   cli.py           click CLI (extract/evaluate/analyze/plot/run)
-tests/            pytest suite (pure-python core + synthetic end-to-end)
+tests/            pytest (ядро на чистом Python + синтетический end-to-end)
 ```
+
+---
+
+## Ключевые ограничения
+
+- **FOK ≠ confidence, FOK ≠ correctness, FOK ≠ доказательство сознания.** Проект нацелен на поиск *внутреннего сигнала состояния знания*, а не на подтверждение философских утверждений.
+- Probe, хорошо предсказывающий `correctness`, **сам по себе** не означает обнаружения FOK (см. §13 — контроль).
+- На маленьких датасетах confident-базовые линии могут достигать потолка; сравнение с hidden-state-сигналом становится информативнее на больших прогонах.
+- Возможен и отрицательный результат: найденный сигнал может полностью объясняться confidence / difficulty / текстовыми признаками. Это тоже важный результат исследования (см. Главный принцип в `PLAN.md`).
