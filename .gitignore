@@ -17,6 +17,5 @@ data/**/*.bin
 
 # experiment outputs
 results/
-experiments/
 
 PLAN.md
