@@ -1,0 +1,21 @@
+name: fok_info_variant128_s123
+seed: 123
+model_path: data/models/Qwen3.5-2B
+layers: all
+max_new_tokens: 48
+temperature: 0.0
+dtype: bfloat16
+device: cuda
+dataset: info_variant
+dataset_config:
+  capture_B: true
+  capture_C: true
+  b_tokens: 8
+train_ratio: 0.6
+val_ratio: 0.2
+representation: last_token
+last_k: 4
+probe: logistic
+probe_C: 1.0
+target: info_relevant
+results_dir: results
