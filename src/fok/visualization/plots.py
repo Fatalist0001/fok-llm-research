@@ -128,7 +128,7 @@ def _plot_control(control_csv, out_dir):
     df = pd.read_csv(control_csv)
     fig, ax = plt.subplots(figsize=(9, 5))
     labels = df["target"]
-    ax.bar(labels, df["real_test_auc"], label="real (best layer)")
+    ax.bar(labels, df["real_test_auc"], label="real (layer chosen by val)")
     ax.bar(labels, df["null_95"], alpha=0.5, color="r", label="null 95th pct.")
     ax.axhline(0.5, color="k", lw=0.8, ls=":")
     ax.set_ylabel("test AUC")

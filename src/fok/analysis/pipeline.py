@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 from ..config import ExperimentConfig
@@ -122,42 +123,65 @@ def _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=200):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        real_auc, layer_used = _best_real_auc(X, y, tr, te, cfg)
+        real_auc, layer_used, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         nulls = []
         for _ in range(n_perm):
             ys = rng.permutation(y)
+            # Skip iterations where the shuffled labels collapse to one class
+            # in the test slice — otherwise roc_auc_score is undefined (NaN).
+            if len(np.unique(ys[te])) < 2:
+                continue
             pd_probe = make_probe(cfg.probe, C=cfg.probe_C)
             pd_probe.fit(X[tr][:, layer_used, :], ys[tr])
             p = pd_probe.predict_proba(X[te][:, layer_used, :])[:, 1]
             nulls.append(float(roc_auc_score(ys[te], p)))
+        if not nulls:
+            nulls = [float("nan")]
         nulls = np.array(nulls)
         res.append({
             "target": tgt,
             "layer": int(_layers[layer_used]) if _layers else -1,
             "real_test_auc": float(real_auc),
-            "null_mean": float(nulls.mean()),
-            "null_95": float(np.percentile(nulls, 95)),
-            "p_value": float((int(np.sum(nulls >= real_auc)) + 1) / (n_perm + 1)),
-            "signal_above_chance95": bool(real_auc > np.percentile(nulls, 95)),
+            "null_mean": float(np.nanmean(nulls)),
+            "null_95": float(np.nanpercentile(nulls, 95)),
+            "p_value": (
+                float((int(np.sum(nulls >= real_auc)) + 1) / (len(nulls) + 1))
+                if not np.isnan(real_auc) and not np.isnan(nulls).all()
+                else float("nan")
+            ),
+            "signal_above_chance95": bool(real_auc > np.nanpercentile(nulls, 95)),
         })
     path = out_dir / "control.csv"
     write_csv(res, path)
     artifacts["control"] = path
 
 
-def _best_real_auc(X, y, tr, te, cfg):
-    """AUC of best single layer (by test) on target y; returns (auc, layer_idx)."""
-    best, bi = -1.0, 0
+def _select_layer_by_val(X, y, tr, val, te, cfg):
+    """Select the best layer by *validation* AUC, then score it once on test.
+
+    The test set is used exactly once, on the single layer chosen via validation,
+    so the reported test AUC is not optimistic from layer-selection (no
+    test-set leakage). Returns ``(test_auc, layer_idx, val_auc)``.
+    """
+    best_val, bi = -1.0, 0
     for li in range(X.shape[1]):
         pr = make_probe(cfg.probe, C=cfg.probe_C)
         pr.fit(X[tr][:, li, :], y[tr])
-        p = pr.predict_proba(X[te][:, li, :])[:, 1]
-        if len(np.unique(y[te])) < 2:
+        if len(np.unique(y[val])) < 2:
             continue
-        a = float(roc_auc_score(y[te], p))
-        if a > best:
-            best, bi = a, li
-    return best, bi
+        va = float(roc_auc_score(y[val], pr.predict_proba(X[val][:, li, :])[:, 1]))
+        if va > best_val:
+            best_val, bi = va, li
+    # score the single selected layer once on the held-out test split
+    pr = make_probe(cfg.probe, C=cfg.probe_C)
+    pr.fit(X[tr][:, bi, :], y[tr])
+    if len(np.unique(y[te])) < 2:
+        test_auc = float("nan")
+    else:
+        test_auc = float(
+            roc_auc_score(y[te], pr.predict_proba(X[te][:, bi, :])[:, 1])
+        )
+    return test_auc, bi, best_val
 
 
 # --------------------------------------------------------------------------- #
@@ -183,7 +207,7 @@ def _timepoints(cfg, rows, features_dir, out_dir, artifacts):
         row = {"target": tgt}
         for tp in avail:
             X, _layers = load_hidden(features_dir, tp)
-            a, _ = _best_real_auc(X, y, tr, te, cfg)
+            a, _li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
             row[f"auc_{tp}"] = float(a)
         res.append(row)
     path = out_dir / "timepoints.csv"
@@ -206,15 +230,17 @@ def _multidim(cfg, rows, features_dir, eval_dir, out_dir, artifacts):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        a, li = _best_real_auc(X, y, tr, te, cfg)
-        # correctness as a comparison axis (same-layer AUC on 'correct')
+        a, li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        # correctness as a comparison axis: select its own layer by validation,
+        # then score the chosen layer once on test (no reuse of the target's
+        # test-selected layer).
         cvec = _correct_col(rows)
-        c_auc = _correct_auc(X, cvec, tr, te, li) if cvec is not None else float("nan")
+        c_auc, _c_li = _correct_auc(X, cvec, tr, val, te, cfg) if cvec is not None else (float("nan"), -1)
         res.append({
             "target": tgt,
             "layer": int(_layers[li]) if _layers else -1,
             "target_test_auc": float(a),
-            "correct_test_auc_same_layer": c_auc,
+            "correct_test_auc": c_auc,
             "n_examples": int(len(rows)),
         })
     path = out_dir / "multidim.csv"
@@ -237,18 +263,32 @@ def _correct_col(rows):
     return np.asarray(vals, dtype=float)
 
 
-def _correct_auc(X, cvec, tr, te, li):
+def _correct_auc(X, cvec, tr, val, te, cfg):
+    """Best correctness AUC on *test*, with the layer selected by validation.
+
+    Returns ``(test_auc, layer_idx)``. NaN when correctness is degenerate (too
+    few examples or a single class) on either the validation or test slice.
+    """
     ok = ~np.isnan(cvec)
-    if ok[tr].sum() < 4 or len(np.unique(cvec[tr][ok[tr]])) < 2:
-        return float("nan")
-    from sklearn.linear_model import LogisticRegression
-    clf = LogisticRegression(max_iter=2000)
     mtr = ok & tr
-    clf.fit(X[mtr][:, li, :], cvec[mtr].astype(int))
+    mval = ok & val
     mte = ok & te
+    if (mtr.sum() < 4
+            or len(np.unique(cvec[mtr])) < 2
+            or len(np.unique(cvec[mval])) < 2):
+        return float("nan"), -1
+    best_val, bi = -1.0, 0
+    for li in range(X.shape[1]):
+        clf = LogisticRegression(max_iter=2000)
+        clf.fit(X[mtr][:, li, :], cvec[mtr].astype(int))
+        va = float(roc_auc_score(cvec[mval].astype(int), clf.predict_proba(X[mval][:, li, :])[:, 1]))
+        if va > best_val:
+            best_val, bi = va, li
     if len(np.unique(cvec[mte])) < 2:
-        return float("nan")
-    return float(roc_auc_score(cvec[mte].astype(int), clf.predict_proba(X[mte][:, li, :])[:, 1]))
+        return float("nan"), bi
+    clf = LogisticRegression(max_iter=2000)
+    clf.fit(X[mtr][:, bi, :], cvec[mtr].astype(int))
+    return float(roc_auc_score(cvec[mte].astype(int), clf.predict_proba(X[mte][:, bi, :])[:, 1])), bi
 
 
 def _read_df(path: Path):
