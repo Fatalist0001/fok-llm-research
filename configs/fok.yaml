@@ -32,7 +32,7 @@ last_k: 4
 # --- probe ---
 probe: logistic                      # logistic | ridge | mlp
 probe_C: 1.0
-
+probe_tune_C: true
 # --- experiment / target ---
 target: knowledge_state
 

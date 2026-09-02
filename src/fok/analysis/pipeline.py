@@ -63,6 +63,7 @@ def analyze(
         _confidence_contrast(probe_df, conf_df, out_dir, artifacts)
 
     _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=n_perm)
+    _simple_baselines(cfg, rows, features_dir, out_dir, artifacts)
     _timepoints(cfg, rows, features_dir, out_dir, artifacts)
     _multidim(cfg, rows, features_dir, eval_dir, out_dir, artifacts)
     _pca_umap_clustering(cfg, rows, features_dir, out_dir, artifacts)
@@ -124,7 +125,7 @@ def _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=200):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        real_auc, layer_used, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        real_auc, layer_used, _, tuned_c = _select_layer_by_val(X, y, tr, val, te, cfg)
         nulls = []
         for _ in range(n_perm):
             ys = rng.permutation(y)
@@ -132,7 +133,10 @@ def _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=200):
             # in the test slice — otherwise roc_auc_score is undefined (NaN).
             if len(np.unique(ys[te])) < 2:
                 continue
-            pd_probe = make_probe(cfg.probe, C=cfg.probe_C)
+            # Null model shares the layer and regularisation chosen on the real
+            # labels (C picked once by validation), so real vs null differ only
+            # in the label shuffle — no per-permutation C search.
+            pd_probe = make_probe(cfg.probe, C=tuned_c, tune_C=False)
             pd_probe.fit(X[tr][:, layer_used, :], ys[tr])
             p = pd_probe.predict_proba(X[te][:, layer_used, :])[:, 1]
             nulls.append(float(roc_auc_score(ys[te], p)))
@@ -162,27 +166,140 @@ def _select_layer_by_val(X, y, tr, val, te, cfg):
 
     The test set is used exactly once, on the single layer chosen via validation,
     so the reported test AUC is not optimistic from layer-selection (no
-    test-set leakage). Returns ``(test_auc, layer_idx, val_auc)``.
+    test-set leakage). Returns ``(test_auc, layer_idx, val_auc, tuned_C)`` where
+    ``tuned_C`` is the regularisation strength chosen by validation AUC (or the
+    fixed ``cfg.probe_C`` when C-tuning is off). The permutation null reuses this
+    same ``tuned_C`` so real and null models share the same regularisation scheme.
     """
     best_val, bi = -1.0, 0
     for li in range(X.shape[1]):
-        pr = make_probe(cfg.probe, C=cfg.probe_C)
-        pr.fit(X[tr][:, li, :], y[tr])
+        pr = make_probe(cfg.probe, C=cfg.probe_C, tune_C=cfg.probe_tune_C)
+        pr.fit(X[tr][:, li, :], y[tr],
+               X_val=X[val][:, li, :] if np.any(val) else None,
+               y_val=y[val] if np.any(val) else None)
         if len(np.unique(y[val])) < 2:
             continue
         va = float(roc_auc_score(y[val], pr.predict_proba(X[val][:, li, :])[:, 1]))
         if va > best_val:
             best_val, bi = va, li
     # score the single selected layer once on the held-out test split
-    pr = make_probe(cfg.probe, C=cfg.probe_C)
-    pr.fit(X[tr][:, bi, :], y[tr])
+    pr = make_probe(cfg.probe, C=cfg.probe_C, tune_C=cfg.probe_tune_C)
+    pr.fit(X[tr][:, bi, :], y[tr],
+           X_val=X[val][:, bi, :] if np.any(val) else None,
+           y_val=y[val] if np.any(val) else None)
+    tuned_C = pr.tuned_C_ if pr.tuned_C_ is not None else float(cfg.probe_C)
     if len(np.unique(y[te])) < 2:
         test_auc = float("nan")
     else:
         test_auc = float(
             roc_auc_score(y[te], pr.predict_proba(X[te][:, bi, :])[:, 1])
         )
-    return test_auc, bi, best_val
+    return test_auc, bi, best_val, tuned_C
+
+
+# --------------------------------------------------------------------------- #
+def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
+    """Baseline probes fit on trivial text/surface features (README §8.2).
+
+    A hidden-state probe is only meaningful if it beats probes trained on plain
+    text features, because the "known/unknown" datasets differ in surface style
+    (field templates, rare made-up name tokens, first/second-person phrasing), not
+    just in actual knowledge. For every target we fit, on the *same* train/val/test
+    splits, a LogisticRegression on:
+
+      * TF-IDF unigrams+bigrams of the question text
+      * the question length (a single scalar feature)
+      * the question category (one-hot), when present
+
+    and record their val/test AUC next to the hidden-state test AUC (best layer by
+    validation). The comparison hidden vs tfidf is the operative "not just style"
+    check; the CSV is written as ``analysis/simple_baselines.csv``.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score
+
+    from fok.evaluation import candidate_targets, target_values
+
+    X, _ = load_hidden(features_dir, "A")
+    if X is None:
+        return
+    tr, val, te, _ = _split_mask(rows)
+
+    texts = [str(r.get("question", "") or "") for r in rows]
+    length = np.asarray([len(t) for t in texts], dtype=float)
+    raw_cats = [str(r.get("category", "") or "") for r in rows]
+    cats = sorted(set(raw_cats))
+
+    # TF-IDF vocabulary is fit on train only (no target / future leakage).
+    vec = None
+    tfidf = None
+    if any(tr):
+        vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1, lowercase=True)
+        vec.fit([texts[i] for i in np.where(tr)[0]])
+        tfidf = vec.transform(texts).toarray()
+
+    def _score_2d(fmat, name):
+        """Fit logistic on train, return (val_auc, test_auc) on the same splits."""
+        if (len(np.unique(y[tr])) < 2
+                or len(np.unique(y[val])) < 2
+                or len(np.unique(y[te])) < 2
+                or fmat.shape[0] != len(rows)):
+            return float("nan"), float("nan")
+        try:
+            clf = LogisticRegression(max_iter=2000)
+            clf.fit(fmat[tr], y[tr])
+            va = roc_auc_score(y[val], clf.predict_proba(fmat[val])[:, 1])
+            ta = roc_auc_score(y[te], clf.predict_proba(fmat[te])[:, 1])
+            return float(va), float(ta)
+        except Exception:
+            return float("nan"), float("nan")
+
+    res = []
+    for tgt in candidate_targets(rows):
+        y = target_values(rows, tgt)
+        if y is None:
+            continue
+        hid_test, _li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+
+        len_val, len_test = _score_2d(length.reshape(-1, 1), "length")
+
+        cat_val = cat_test = float("nan")
+        if len(cats) > 1:
+            catmat = np.zeros((len(rows), len(cats)), dtype=float)
+            for i, c in enumerate(cats):
+                catmat[:, i] = [1.0 if rc == c else 0.0 for rc in raw_cats]
+            cat_val, cat_test = _score_2d(catmat, "category")
+
+        tf_val = tf_test = float("nan")
+        if tfidf is not None:
+            tf_val, tf_test = _score_2d(tfidf, "tfidf")
+
+        hid_clean = float(hid_test) if not np.isnan(hid_test) else float("nan")
+        beats_tf = not (np.isnan(hid_clean) or np.isnan(tf_test)) and hid_clean > tf_test
+        res.append({
+            "target": tgt,
+            "n_train": int(tr.sum()),
+            "n_val": int(val.sum()),
+            "n_test": int(te.sum()),
+            "hidden_test_auc": hid_clean,
+            "tfidf_val_auc": tf_val,
+            "tfidf_test_auc": tf_test,
+            "length_val_auc": len_val,
+            "length_test_auc": len_test,
+            "category_val_auc": cat_val,
+            "category_test_auc": cat_test,
+            "hidden_beats_tfidf": beats_tf,
+            "advantage_over_tfidf": (
+                float(hid_clean - tf_test)
+                if not (np.isnan(hid_clean) or np.isnan(tf_test)) else float("nan")
+            ),
+        })
+    if not res:
+        return
+    path = out_dir / "simple_baselines.csv"
+    write_csv(res, path)
+    artifacts["simple_baselines"] = path
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +325,7 @@ def _timepoints(cfg, rows, features_dir, out_dir, artifacts):
         row = {"target": tgt}
         for tp in avail:
             X, _layers = load_hidden(features_dir, tp)
-            a, _li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+            a, _li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
             row[f"auc_{tp}"] = float(a)
         res.append(row)
     path = out_dir / "timepoints.csv"
@@ -231,7 +348,7 @@ def _multidim(cfg, rows, features_dir, eval_dir, out_dir, artifacts):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        a, li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        a, li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         # correctness as a comparison axis: select its own layer by validation,
         # then score the chosen layer once on test (no reuse of the target's
         # test-selected layer).
@@ -328,7 +445,7 @@ def _pca_umap_clustering(cfg, rows, features_dir, out_dir, artifacts):
             continue
 
         # Select best layer by validation AUC (same logic as other analyses).
-        best_auc, best_li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        best_auc, best_li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         if np.isnan(best_auc):
             continue
         X_best = X[:, best_li, :]  # [n_examples, hidden_dim]

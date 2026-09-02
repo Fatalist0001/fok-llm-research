@@ -41,47 +41,105 @@ class ProbeResult:
 class LinearProbe:
     """A thin wrapper around sklearn logistic / ridge regression.
 
-    It keeps the fitted model and the layer/representation it was fit on, so the
-    evaluation and analysis stages can reference the exact probe configuration.
+    Features are standardised (``StandardScaler``) on the *train* split before
+    fitting, and the same transform is applied at inference. Standardising
+    removes the dependence of the linear read-out on per-feature scale, which
+    matters in the ``p >> n`` regime (small train, very high hidden dimension):
+    un-standardised logistic regression is unstable across layers that live on
+    different scales.
+
+    Optional C-tuning (``tune_C=True`` + ``X_val``/``y_val`` passed to
+    :meth:`fit`) picks ``C`` by validation AUC instead of a fixed value, which
+    is the honest treatment of the same ``p >> n`` regime. When tuning is off,
+    the fixed ``C`` supplied at construction is used.
     """
 
-    def __init__(self, kind: str = "logistic", C: float = 1.0, **kwargs):
+    def __init__(
+        self,
+        kind: str = "logistic",
+        C: float = 1.0,
+        tune_C: bool = False,
+        C_grid: Optional[list] = None,
+        **kwargs,
+    ):
         self.kind = kind
         self.C = C
+        self.tune_C = tune_C
+        self.C_grid = C_grid if C_grid is not None else [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 100.0]
         self.kwargs = kwargs
-        if kind == "logistic":
+        self.scaler_ = None
+        self.tuned_C_ = None
+        self.clf = self._make_clf(C)
+
+    def _make_clf(self, C):
+        if self.kind == "logistic":
             from sklearn.linear_model import LogisticRegression
 
-            self.clf = LogisticRegression(
-                C=C, max_iter=2000, class_weight=None, **kwargs
-            )
-        elif kind == "ridge":
+            return LogisticRegression(C=C, max_iter=2000, class_weight=None, **self.kwargs)
+        elif self.kind == "ridge":
             from sklearn.linear_model import Ridge
 
-            self.clf = Ridge(**kwargs)
+            return Ridge(**self.kwargs)
         else:
             raise ValueError(f"unknown probe kind: {kind}")
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LinearProbe":
-        self.clf.fit(X, y)
+    def fit(self, X: np.ndarray, y: np.ndarray, X_val=None, y_val=None) -> "LinearProbe":
+        from sklearn.preprocessing import StandardScaler
+
+        self.scaler_ = StandardScaler().fit(X)
+        Xs = self.scaler_.transform(X)
+
+        if self.tune_C and X_val is not None and self.kind == "logistic":
+            Xs_val = self.scaler_.transform(X_val)
+            if len(np.unique(y_val)) >= 2:
+                from sklearn.linear_model import LogisticRegression
+                from sklearn.metrics import roc_auc_score
+
+                best_auc, best_c = -1.0, self.C
+                for c in self.C_grid:
+                    clf = LogisticRegression(C=c, max_iter=2000, class_weight=None, **self.kwargs)
+                    clf.fit(Xs, y)
+                    try:
+                        auc = float(roc_auc_score(y_val, clf.predict_proba(Xs_val)[:, 1]))
+                    except Exception:
+                        auc = -1.0
+                    if auc > best_auc:
+                        best_auc, best_c = auc, c
+                self.tuned_C_ = best_c
+                self.clf = self._make_clf(best_c)
+            else:
+                self.tuned_C_ = self.C
+                self.clf = self._make_clf(self.C)
+        elif self.tune_C and self.kind == "logistic":
+            self.tuned_C_ = self.C
+            self.clf = self._make_clf(self.C)
+
+        self.clf.fit(Xs, y)
         return self
 
+    def _transform(self, X: np.ndarray) -> np.ndarray:
+        if self.scaler_ is None:
+            return X
+        return self.scaler_.transform(X)
+
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.clf.predict(X)
+        return self.clf.predict(self._transform(X))
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        Xt = self._transform(X)
         if self.kind == "logistic":
-            return self.clf.predict_proba(X)
-        y = self.clf.predict(X)
+            return self.clf.predict_proba(Xt)
+        y = self.clf.predict(Xt)
         out = np.zeros((len(X), 2))
         out[:, 0] = 1 - y
         out[:, 1] = y
         return out
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
+        Xt = self._transform(X)
         if hasattr(self.clf, "decision_function"):
-            return self.clf.decision_function(X)
-        return self.clf.predict(X)
+            return self.clf.decision_function(Xt)
+        return self.clf.predict(Xt)
 
     def coef(self) -> np.ndarray:
         return np.asarray(self.clf.coef_).reshape(-1)

@@ -23,5 +23,6 @@ representation: last_token
 last_k: 4
 probe: logistic
 probe_C: 1.0
+probe_tune_C: true
 target: knowable
 results_dir: results

@@ -31,7 +31,7 @@ last_k: 4
 # --- probe ---
 probe: logistic
 probe_C: 1.0
-
+probe_tune_C: true
 # --- experiment / target ---
 target: knowable
 

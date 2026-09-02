@@ -102,3 +102,45 @@ def test_mlp_probe_runs():
     # just must not raise; small data / few epochs
     out = pr.predict_proba(X[40:])
     assert out.shape[1] == 2
+
+
+# --------------------------------------------------------------------------- #
+# B1: standardisation, B2: C-tuning (audit fixes)
+# --------------------------------------------------------------------------- #
+def test_probe_standardises_features():
+    """B1 fix: LinearProbe should standardise features on a very skewed scale."""
+    rng = np.random.default_rng(2)
+    X = rng.standard_normal((80, 16)) * rng.exponential(100, (16,))
+    y = (X[:, 0] > np.median(X[:, 0])).astype(int)
+    pr = make_probe("logistic", C=1.0)
+    pr.fit(X[:60], y[:60], X_val=X[60:], y_val=y[60:])
+    assert pr.scaler_ is not None
+    # prediction uses the scaler, so it must not crash even with huge scales
+    p = pr.predict_proba(X[60:])[:, 1]
+    assert np.all(np.isfinite(p))
+
+
+def test_probe_c_tuning_uses_validation():
+    """B2 fix: with tune_C=True the probe picks C by validation AUC."""
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((90, 20))
+    # strong but high-dimensional-ish separable signal
+    y = (X[:, 0] + 0.5 * X[:, 1] + rng.standard_normal(90) * 0.1 > 0).astype(int)
+    pr = make_probe("logistic", C=1.0, tune_C=True)
+    pr.fit(X[:60], y[:60], X_val=X[60:75], y_val=y[60:75])
+    assert pr.tuned_C_ is not None
+    assert pr.tuned_C_ in pr.C_grid
+    p = pr.predict_proba(X[75:])[:, 1]
+    # probe should still work after tuning
+    assert np.all(np.isfinite(p))
+
+
+def test_probe_c_tuning_off_default():
+    """Without tune_C, C stays at its fixed value (no validation needed)."""
+    rng = np.random.default_rng(4)
+    X = rng.standard_normal((60, 12))
+    y = (X[:, 0] > 0).astype(int)
+    pr = make_probe("logistic", C=1.0)
+    pr.fit(X[:40], y[:40])  # no X_val passed
+    assert pr.tuned_C_ is None
+    assert pr.clf.C == 1.0

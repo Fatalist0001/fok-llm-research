@@ -45,7 +45,7 @@ def _probe_scores(probe, X: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 def _fit_eval(probe, X, y, tr, val, te):
     """Fit on train rows, return per-split metrics + scores."""
-    probe.fit(X[tr], y[tr])
+    probe.fit(X[tr], y[tr], X_val=X[val] if np.any(val) else None, y_val=y[val] if np.any(val) else None)
     scores = {s: _probe_scores(probe, X[m], y[m]) for s, m in
               (("train", tr), ("val", val), ("test", te))}
     m = {s: binary_metrics(y[m], scores[s]) for s, m in
@@ -92,7 +92,7 @@ def evaluate(
             continue
         for li, layer in enumerate(layer_list):
             Xl = X[:, li, :]  # [N, hidden]
-            probe = make_probe(cfg.probe, C=cfg.probe_C)
+            probe = make_probe(cfg.probe, C=cfg.probe_C, tune_C=cfg.probe_tune_C)
             metrics, scores = _fit_eval(probe, Xl, y, tr, val, te)
             probe_rows.append({
                 "target": tgt,

@@ -71,7 +71,7 @@ def test_end_to_end(tmp_path):
     arts = analyze(cfg, n_perm=20)
     for name in ("per_layer_auc", "confidence_contrast", "control",
                  "timepoints", "multidim", "multidim_pca",
-                 "multidim_clusters"):
+                 "multidim_clusters", "simple_baselines"):
         assert name in arts, f"missing analysis artifact {name}"
 
     plots = plot(cfg)

@@ -61,6 +61,9 @@ class ExperimentConfig:
     # "logistic" (classification) or "ridge" (regression)
     probe: str = "logistic"
     probe_C: float = 1.0
+    # If True, pick the logistic regularisation C by validation AUC (B2 audit
+    # fix) instead of the fixed probe_C. Features are always standardised.
+    probe_tune_C: bool = False
     # For the MLP experiment we train the same probe on the same data with an MLP.
     mlp_hidden: List[int] = field(default_factory=lambda: [256])
 
