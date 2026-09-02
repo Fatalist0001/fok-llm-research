@@ -1,0 +1,38 @@
+# Difficulty-graded trivia run for the "signal vs confidence" experiment.
+# Key goal: does a hidden-state probe separate knowable/un-knowable while
+# ordinary confidence stays below its ceiling (unlike fok_trivia/synth, which
+# saturate both at ~1.0)?
+name: fok_graded_trivia
+seed: 42
+
+# --- model ---
+model_path: data/models/Qwen3.5-2B
+layers: all
+max_new_tokens: 48
+temperature: 0.0
+dtype: bfloat16
+device: cuda
+
+# --- dataset ---
+dataset: graded_trivia
+dataset_config:
+  n_invented: 48
+  seed: 7
+  capture_B: true
+  capture_C: true
+  b_tokens: 8
+train_ratio: 0.6
+val_ratio: 0.2
+
+# --- representation ---
+representation: last_token
+last_k: 4
+
+# --- probe ---
+probe: logistic
+probe_C: 1.0
+
+# --- experiment / target ---
+target: knowable
+
+results_dir: results

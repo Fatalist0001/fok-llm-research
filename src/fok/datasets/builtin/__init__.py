@@ -14,6 +14,7 @@ from ..base import Dataset
 
 def _registry() -> Dict[str, Callable[[Dict[str, Any]], Dataset]]:
     from . import answerability as _ans
+    from . import graded_trivia as _graded
     from . import info_variant as _info
     from . import synthetic_knowledge as _synth
     from . import trivia as _trivia
@@ -23,6 +24,7 @@ def _registry() -> Dict[str, Callable[[Dict[str, Any]], Dataset]]:
         "synthetic_knowledge": _synth.build_dataset,
         "info_variant": _info.build_dataset,
         "answerability": _ans.build_dataset,
+        "graded_trivia": _graded.build_dataset,
     }
 
 

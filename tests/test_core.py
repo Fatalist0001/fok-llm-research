@@ -49,6 +49,7 @@ def test_dataset_splits_and_targets():
     ("synthetic_knowledge", "knowable"),
     ("info_variant", "info_relevant"),
     ("answerability", "answerable"),
+    ("graded_trivia", "knowable"),
 ])
 def test_target_detection(name, target_col):
     ds = get_dataset(name, {"n_per_class": 8} if name == "synthetic_knowledge" else None)
