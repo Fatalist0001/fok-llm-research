@@ -70,10 +70,13 @@ def test_end_to_end(tmp_path):
 
     arts = analyze(cfg, n_perm=20)
     for name in ("per_layer_auc", "confidence_contrast", "control",
-                 "timepoints", "multidim"):
+                 "timepoints", "multidim", "multidim_pca",
+                 "multidim_clusters"):
         assert name in arts, f"missing analysis artifact {name}"
 
     plots = plot(cfg)
     assert "per_layer" in plots
     assert "confidence_contrast" in plots
+    assert "multidim_pca" in plots
+    assert "multidim_clusters" in plots
     assert (tmp_path / cfg.run_id() / "plots" / "confidence_contrast.png").exists()

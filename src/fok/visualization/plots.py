@@ -59,6 +59,18 @@ def plot(
     if timepoints.exists():
         artifacts["timepoints"] = _plot_timepoints(timepoints, out_dir)
 
+    pca = analysis_dir / "multidim_pca.csv"
+    if pca.exists():
+        artifacts["multidim_pca"] = _plot_pca(pca, out_dir)
+
+    umap = analysis_dir / "multidim_umap.csv"
+    if umap.exists():
+        artifacts["multidim_umap"] = _plot_umap(umap, out_dir)
+
+    clusters = analysis_dir / "multidim_clusters.csv"
+    if clusters.exists():
+        artifacts["multidim_clusters"] = _plot_clusters(clusters, out_dir)
+
     save_json({k: str(v) for k, v in artifacts.items()}, out_dir / "plots_meta.json")
     logger.info("Plots written -> %s", out_dir)
     return artifacts
@@ -160,6 +172,89 @@ def _plot_timepoints(timepoints_csv, out_dir):
     ax.grid(alpha=0.3)
     fig.tight_layout()
     p = out_dir / "timepoints.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    return p
+
+
+# --------------------------------------------------------------------------- #
+# Multidimensionality plots (spec §11)
+# --------------------------------------------------------------------------- #
+
+def _plot_pca(csv_path, out_dir):
+    """PCA 2D scatter plots colored by each target label (spec §11)."""
+    df = pd.read_csv(csv_path)
+    targets = df["target"].unique()
+    fig, axes = plt.subplots(1, len(targets), figsize=(6 * len(targets), 5), squeeze=False)
+    for ax, tgt in zip(axes[0], targets):
+        sub = df[df["target"] == tgt]
+        for label in sorted(sub["label"].unique()):
+            mask = sub["label"] == label
+            split_markers = {"train": "o", "val": "s", "test": "^"}
+            for spl in sub[mask]["split"].unique():
+                m = mask & (sub["split"] == spl)
+                ax.scatter(sub.loc[m, "x"], sub.loc[m, "y"],
+                           marker=split_markers.get(spl, "o"),
+                           label=f"{tgt}={label} ({spl})", alpha=0.7, s=40)
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
+        ax.set_title(f"PCA — {tgt}")
+        ax.legend(fontsize=6, loc="best")
+        ax.grid(alpha=0.3)
+    fig.suptitle("PCA projection of hidden states (best layer per target)", y=1.02)
+    fig.tight_layout()
+    p = out_dir / "multidim_pca.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return p
+
+
+def _plot_umap(csv_path, out_dir):
+    """UMAP 2D scatter plots colored by each target label (spec §11)."""
+    df = pd.read_csv(csv_path)
+    targets = df["target"].unique()
+    fig, axes = plt.subplots(1, len(targets), figsize=(6 * len(targets), 5), squeeze=False)
+    for ax, tgt in zip(axes[0], targets):
+        sub = df[df["target"] == tgt]
+        for label in sorted(sub["label"].unique()):
+            mask = sub["label"] == label
+            split_markers = {"train": "o", "val": "s", "test": "^"}
+            for spl in sub[mask]["split"].unique():
+                m = mask & (sub["split"] == spl)
+                ax.scatter(sub.loc[m, "x"], sub.loc[m, "y"],
+                           marker=split_markers.get(spl, "o"),
+                           label=f"{tgt}={label} ({spl})", alpha=0.7, s=40)
+        ax.set_xlabel("UMAP1")
+        ax.set_ylabel("UMAP2")
+        ax.set_title(f"UMAP — {tgt}")
+        ax.legend(fontsize=6, loc="best")
+        ax.grid(alpha=0.3)
+    fig.suptitle("UMAP projection of hidden states (best layer per target)", y=1.02)
+    fig.tight_layout()
+    p = out_dir / "multidim_umap.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return p
+
+
+def _plot_clusters(csv_path, out_dir):
+    """Bar chart of ARI and purity for KMeans clustering vs each target."""
+    df = pd.read_csv(csv_path)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    x = np.arange(len(df))
+    w = 0.35
+    ax.bar(x - w / 2, df["ari"], w, label="Adjusted Rand Index")
+    ax.bar(x + w / 2, df["purity"], w, label="Purity")
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["target"])
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 1.05)
+    ax.axhline(0.0, color="k", lw=0.8, ls=":")
+    ax.set_title("KMeans(k=2) clustering alignment with targets (spec §11)")
+    ax.legend()
+    ax.grid(alpha=0.3, axis="y")
+    fig.tight_layout()
+    p = out_dir / "multidim_clusters.png"
     fig.savefig(p, dpi=150)
     plt.close(fig)
     return p

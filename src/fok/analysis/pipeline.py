@@ -65,6 +65,7 @@ def analyze(
     _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=n_perm)
     _timepoints(cfg, rows, features_dir, out_dir, artifacts)
     _multidim(cfg, rows, features_dir, eval_dir, out_dir, artifacts)
+    _pca_umap_clustering(cfg, rows, features_dir, out_dir, artifacts)
 
     logger.info("Analysis complete -> %s", out_dir)
     return artifacts
@@ -295,3 +296,133 @@ def _read_df(path: Path):
     if not path.exists():
         return None
     return pd.read_csv(path)
+
+
+# --------------------------------------------------------------------------- #
+# PCA / UMAP / clustering  (spec §11)
+# --------------------------------------------------------------------------- #
+
+def _pca_umap_clustering(cfg, rows, features_dir, out_dir, artifacts):
+    """PCA, UMAP projections and KMeans clustering of hidden states.
+
+    For each candidate target, the best layer (selected by validation AUC) is
+    projected to 2D via PCA and (optionally) UMAP, and clustered with
+    KMeans(k=2).  Results are saved as CSVs that the plot stage reads.
+
+    Spec §11: "Исследование многомерности" — PCA, UMAP, clustering.
+    """
+    from fok.evaluation import candidate_targets, target_values
+
+    X, layers = load_hidden(features_dir, "A")
+    if X is None:
+        return
+    tr, val, te, splits = _split_mask(rows)
+
+    pca_rows = []
+    umap_rows = []
+    cluster_rows = []
+
+    for tgt in candidate_targets(rows):
+        y = target_values(rows, tgt)
+        if y is None:
+            continue
+
+        # Select best layer by validation AUC (same logic as other analyses).
+        best_auc, best_li, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        if np.isnan(best_auc):
+            continue
+        X_best = X[:, best_li, :]  # [n_examples, hidden_dim]
+        layer_id = int(layers[best_li]) if layers else best_li
+
+        # ── PCA ──────────────────────────────────────────────────────
+        coords = _run_pca(X_best)
+        for i, (cx, cy) in enumerate(coords):
+            pca_rows.append({
+                "x": float(cx), "y": float(cy),
+                "target": tgt, "label": int(y[i]),
+                "split": splits[i], "layer": layer_id,
+            })
+
+        # ── UMAP (optional) ──────────────────────────────────────────
+        coords_u = _run_umap(X_best)
+        if coords_u is not None:
+            for i, (cx, cy) in enumerate(coords_u):
+                umap_rows.append({
+                    "x": float(cx), "y": float(cy),
+                    "target": tgt, "label": int(y[i]),
+                    "split": splits[i], "layer": layer_id,
+                })
+
+        # ── Clustering ───────────────────────────────────────────────
+        ari, purity = _run_clustering(X_best, y)
+        cluster_rows.append({
+            "target": tgt,
+            "layer": layer_id,
+            "val_auc": float(best_auc),
+            "ari": float(ari),
+            "purity": float(purity),
+            "n_examples": int(len(y)),
+        })
+
+    if pca_rows:
+        path = out_dir / "multidim_pca.csv"
+        write_csv(pca_rows, path)
+        artifacts["multidim_pca"] = path
+
+    if umap_rows:
+        path = out_dir / "multidim_umap.csv"
+        write_csv(umap_rows, path)
+        artifacts["multidim_umap"] = path
+
+    if cluster_rows:
+        path = out_dir / "multidim_clusters.csv"
+        write_csv(cluster_rows, path)
+        artifacts["multidim_clusters"] = path
+
+
+def _run_pca(X_2d: np.ndarray) -> np.ndarray:
+    """Project [n, hidden_dim] to 2D via PCA. Returns [n, 2]."""
+    from sklearn.decomposition import PCA
+
+    n_components = min(2, X_2d.shape[0], X_2d.shape[1])
+    pca = PCA(n_components=n_components, random_state=0)
+    coords = pca.fit_transform(X_2d)
+    # Pad to 2 columns if only 1 component was possible.
+    if coords.shape[1] == 1:
+        coords = np.hstack([coords, np.zeros_like(coords)])
+    return coords
+
+
+def _run_umap(X_2d: np.ndarray):
+    """Project [n, hidden_dim] to 2D via UMAP. Returns [n, 2] or None."""
+    try:
+        import umap
+    except ImportError:
+        logger.info("umap-learn not installed; skipping UMAP projection")
+        return None
+    reducer = umap.UMAP(n_components=2, random_state=0, n_neighbors=min(15, len(X_2d) - 1))
+    return reducer.fit_transform(X_2d)
+
+
+def _run_clustering(X_2d: np.ndarray, y: np.ndarray):
+    """KMeans(k=2) on the hidden states; return (ARI, purity) vs ground truth."""
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import adjusted_rand_score
+
+    km = KMeans(n_clusters=2, n_init=10, random_state=0)
+    pred = km.fit_predict(X_2d)
+    ari = adjusted_rand_score(y, pred)
+    purity = _purity(y, pred)
+    return ari, purity
+
+
+def _purity(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Fraction of examples in the majority class of their assigned cluster."""
+    total = len(y_true)
+    if total == 0:
+        return 0.0
+    correct = 0
+    for k in np.unique(y_pred):
+        mask = y_pred == k
+        correct += int((y_true[mask] == np.bincount(y_true[mask].astype(int)).argmax()).sum())
+    return correct / total
