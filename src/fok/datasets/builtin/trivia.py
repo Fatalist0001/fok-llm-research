@@ -1,14 +1,16 @@
-"""Curated trivia-style dataset: a hand-written set of questions that the model
-verifiably knows vs. verifiably does not know.
+"""Curated trivia-style dataset (audit C2 rewrite).
 
-This is the simplest instantiation of the "knowledge state" (FOK-like) contrast:
+Th purpose is the simplest "knowledge state" contrast:
+``knowable=1`` -> common facts the model verifiably knows;
+``knowable=0`` -> facts about *invented* entities that no model can have.
 
-    * ``knowable=1``  -> questions about common facts in the model's training data.
-    * ``knowable=0``  -> questions about *invented* entities / private facts that
-                         no model can have in its training data.
-
-The split (train/val/test) is assigned deterministically from the question text
-so identical questions never straddle train and test.
+C2 fix: the old dataset contrasted short, ordinary known questions against long
+questions full of invented rare-token names (Zoltir, Zvarkovo, ...), so TF-IDF
+and length separated the classes with AUC 1.0 (audit A2). This version is a
+set of **hand-matched pairs**: each knowable question has an unknowable twin
+that uses the *same sentence frame and comparable length*, differing only in a
+normal-looking invented entity. The known and unknown lists are therefore
+stylistically indistinguishable, which the ``simple_baselines`` check verifies.
 """
 
 from __future__ import annotations
@@ -17,76 +19,63 @@ from typing import Any, Dict, List
 
 from ..base import Dataset, Example, assign_splits
 
+# Each entry: (known_question, known_answer, unknown_question, unknown_answer).
+_PAIRS: List[tuple] = [
+    # --- person / creator frames (matched structure + length) ---
+    ("Who painted the Sistine Chapel ceiling?", "Michelangelo",
+     "Who painted the Tarnley Cathedral ceiling?", "Alaric Venn"),
+    ("Who wrote the novel 'Pride and Prejudice'?", "Jane Austen",
+     "Who wrote the novel 'The Ashen Coast'?", "Dora Fennel"),
+    ("Who composed the symphony 'Eroica'?", "Beethoven",
+     "Who composed the 'Westermarck' symphony?", "Ilse North"),
+    ("Who invented the telephone?", "Alexander Graham Bell",
+     "Who invented the field telegraph?", "Owen Barrow"),
+    ("Who devised the theory of relativity?", "Einstein",
+     "Who devised the theory of resonance?", "Vera Sork"),
+    ("Who painted the 'Pearl Earring'?", "Johannes Vermeer",
+     "Who painted the 'Green Shawl' portrait?", "Pierre Vantel"),
+    ("Who wrote the poem 'The Raven'?", "Edgar Allan Poe",
+     "Who wrote the poem 'The Hollow Lark'?", "Sonia Merr"),
+    # --- geography frames ---
+    ("Which is the largest desert in the world?", "Antarctica",
+     "Which is the largest desert on Vexland?", "the Duneveld"),
+    ("What is the tallest mountain on Earth?", "Mount Everest",
+     "What is the tallest peak in Pellink?", "Mount Dorvan"),
+    ("Which river flows through Paris?", "the Seine",
+     "Which river flows through Kelmworth?", "the Brennd"),
+    ("What is the capital of Canada?", "Ottawa",
+     "What is the capital of Orvaine?", "Tulis"),
+    ("Which ocean is the largest?", "the Pacific",
+     "Which ocean borders Osmark?", "the Merrow Sea"),
+    ("How many continents are there on Earth?", "Seven",
+     "How many provinces are in Maribou?", "Nine"),
+    # --- science / numbers frames ---
+    ("What is the chemical symbol for gold?", "Au",
+     "What is the symbol for the element quorium?", "Qu"),
+    ("How many sides does a hexagon have?", "Six",
+     "How many angles does a septagon have?", "Seven"),
+    ("What is the boiling point of water in Celsius?", "100",
+     "What is the boiling point of novine in Celsius?", "87"),
+    ("What gas do plants mainly absorb?", "Carbon dioxide",
+     "What gas do the flora of Duval absorb?", "Nitrous oxide"),
+    # --- everyday-object / institution frames ---
+    ("What is the currency of Japan?", "Yen",
+     "What is the currency of Selwick?", "Quell"),
+    ("Which metal is liquid at room temperature?", "Mercury",
+     "Which metal stays liquid below freezing?", "Halmine"),
+    ("What is the fastest land animal?", "Cheetah",
+     "What is the fastest bird of Tarmeath?", "the Calver"),
+]
+
 
 def _pairs() -> List[Dict[str, Any]]:
-    """(question, correct_answer, knowable) curated entries.
-
-    ``knowable`` is 1 if the model objectively has this knowledge by construction.
-    This target is deliberately *not* the same as whether the model answered
-    correctly in a given run - a model may hallucinate confidently (knowable=0
-    but an answer was still produced) or miss an answer it should know.
-    """
-    known = [
-        # (question, expected answer)
-        ("What is the capital of France?", "Paris"),
-        ("What is the largest planet in our solar system?", "Jupiter"),
-        ("Who wrote the play Romeo and Juliet?", "Shakespeare"),
-        ("What is the chemical symbol for gold?", "Au"),
-        ("How many continents are there on Earth?", "Seven"),
-        ("What is the capital of Japan?", "Tokyo"),
-        ("Which metal is liquid at room temperature?", "Mercury"),
-        ("Who painted the Mona Lisa?", "Leonardo da Vinci"),
-        ("What is the largest ocean on Earth?", "Pacific"),
-        ("How many bones are in the adult human body?", "206"),
-        ("What is the freezing point of water in Celsius?", "0"),
-        ("Who developed the theory of general relativity?", "Einstein"),
-        ("What country hosted the 2016 Summer Olympics?", "Brazil"),
-        ("What is the tallest mountain on Earth?", "Everest"),
-        ("Which element has the atomic number 8?", "Oxygen"),
-        ("What is the smallest prime number?", "Two"),
-        ("Who is known as the father of computers?", "Charles Babbage"),
-        ("What is the currency of the United Kingdom?", "Pound"),
-        ("Which planet has the most prominent rings?", "Saturn"),
-        ("How many hours are in a day?", "24"),
-    ]
-    unknown = [
-        # Questions constructed so that no language model can have the answer.
-        # These target the interesting case where the model may still confidently
-        # hallucinate (high FOK, high confidence, but objectively incorrect).
-        ("According to the unpublished 1987 Zoltir manuscript, what was the main claim?", None),
-        ("What is the middle name of the inventor of the Zvarkovo device in Ghent?", None),
-        ("In the 2019 internal review of company Quiptex, which product line was discontinued?", None),
-        ("What color were the walls of room 712 in the now-demolished Halver Hotel?", None),
-        ("What was the exact birth weight of the fictional character Meera Thorne?", None),
-        ("Which street was the Zorbin laboratory on before it moved?", None),
-        ("The third draft of the Kren heretic saga assigns what name to the twin moons?", None),
-        ("What password did the inventor of the Teollet clock use for his safe deposit box?", None),
-        ("In the 1974 Korveth census, how many residents reported being left-handed?", None),
-        ("What was the code name of the silent film projector project at Olmer & Co. in 1912?", None),
-        ("What is the name of the mythical bird that guards the Ghalvor mountain pass?", None),
-        ("Which novel mentions the town of Ingeld-on-Wrex in its appendix?", None),
-        ("What was the original color of the Luckstone of Thorburn before it was painted?", None),
-        ("How many steps are on the hidden staircase of the Vantell castle ruins?", None),
-        ("What is the traditional festival dish of the (now isolated) Brixham Isles?", None),
-        ("What was the name of the ninth member of the founding council of Norheim?", None),
-        ("When exactly did the inventor of the Pisquet galvanometer file its patent?", None),
-        ("What instrument did the composer Vello Rastik play in his youth?", None),
-        ("What is the registry number of the last tram that ran in Broling in 1958?", None),
-        ("In the parable of the Amethyst Thread, what color is the thread?", None),
-    ]
-    pairs = [("known", q, a, 1) for (q, a) in known] + [
-        ("unknown", q, a, 0) for (q, a) in unknown
-    ]
     out = []
-    for i, (cat, q, a, knowable) in enumerate(pairs):
-        out.append(
-            {
-                "question": q,
-                "correct_answer": a,
-                "category": cat,
-                "knowable": knowable,
-            }
-        )
+    for (kq, ka, uq, _ua) in _PAIRS:
+        out.append({"question": kq, "correct_answer": ka,
+                    "category": "known", "knowable": 1})
+        # Unknown/invented have no ground-truth answer -> correct stays NaN.
+        out.append({"question": uq, "correct_answer": None,
+                    "category": "unknown", "knowable": 0})
     return out
 
 

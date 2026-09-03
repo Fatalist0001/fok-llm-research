@@ -76,6 +76,11 @@ def test_check_answer():
     assert check_answer("red", "blue") is False
     assert check_answer("anything", None) is None
     assert check_answer("", "Paris") is None
+    # C1: article stripping + word-boundary matching
+    assert check_answer("The capital is Paris.", "the paris") is True
+    assert check_answer("It is Paris city.", "paris") is True
+    assert check_answer("A person from Parisian descent", "Paris") is False
+    assert check_answer("The answer is New York.", "New York") is True
 
 
 # --------------------------------------------------------------------------- #

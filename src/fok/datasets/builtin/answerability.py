@@ -1,11 +1,17 @@
-"""Answerability dataset: cleanly answerable vs. unanswerable questions.
+"""Answerability dataset (audit C2 rewrite): answerable vs. unanswerable.
 
-A second independent axis of the knowledge state. ``answerable=1`` questions have
-a definitive factual answer; ``answerable=0`` are phrased so that no definite
-answer exists (personal, subjective, unobservable, or impossible-for-the-model).
+Defines a second independent axis of the knowledge state. ``answerable=1``
+questions have a definitive factual answer; ``answerable=0`` are phrased so no
+definite answer exists (private, unobservable, exact-count, or future facts).
 
-Because ``answerable`` is a property of the question (not of the produced text),
-the probe target stays independent of correctness.
+C2 fix: the old unanswerable list leaned heavily on first/second-person personal
+questions ("...the shoes I wore last Tuesday?", "...my favorite...", "...you...").
+That produced a systematic lexical + length confound (audit A2: length gave AUC
+0.98). This version re-words unanswerable questions as **objective, third-person
+and future/exact-count** statements with comparable length to the answerable
+ones, so no pronoun/yesterday class signature remains. Because ``answerable`` is
+a property of the question (not of the output text), the target stays
+independent of correctness.
 """
 
 from __future__ import annotations
@@ -49,39 +55,43 @@ _ANSWERABLE: List[tuple] = [
     ("Who developed the theory of general relativity?", "Albert Einstein"),
 ]
 
+# Re-worded as *objective* unknowable facts -- third person, exact counts,
+# private records, or future states -- with length comparable to the answerable
+# ones, so no pronoun/date-class length signature remains. Each is phrased as a
+# short question about an exact-but-unobservable quantity.
 _UNANSWERABLE: List[str] = [
-    "What is the exact number of stars visible from your kitchen window tonight?",
-    "What color is the dragon you dreamed about last Tuesday?",
-    "How many hours of sleep did the author of this question get in 1999?",
-    "What is the precise weight of the apple in my backpack right now?",
-    "What is the name of your favorite song when you were a child?",
-    "How many grains of sand are on the specific beach I visited yesterday?",
-    "What did my grandfather say to me the last time we met?",
-    "What is the flavor of the cake that does not exist anywhere?",
-    "What color were the shoes I wore last Tuesday?",
-    "How many times did I blink while answering this question?",
-    "What is my favorite childhood memory?",
-    "What exactly did I eat for breakfast one year ago today?",
-    "What is the name of the neighbor's imaginary friend?",
-    "How many letters are in the book I have not finished reading yet?",
-    "What will the exact temperature be in my bedroom at 3:15 am tomorrow?",
-    "What song was the first reader of this question listening to?",
-    "What is the street address of the house I visited in a dream last night?",
-    "What color is the coat worn by the person behind me right now?",
-    "What was the last thing the last person to use this keyboard said?",
-    "How many pancakes did I eat on my third birthday?",
-    "What is the plot of the movie I will watch next Friday?",
-    "What was my favorite ice cream flavor in 2010?",
-    "What did my grandmother whisper to me when I was two days old?",
-    "How many words did I speak yesterday?",
-    "What is the name of the song playing in my head right now?",
-    "What time will I wake up next Tuesday?",
-    "What is the middle name of my mail carrier's oldest sibling?",
-    "What color was the first car I saw while traveling in 2008?",
-    "How many years old is the oldest leaf on the neighbor's tree?",
-    "What is the secret password I intended to set but never did?",
-    "How much money is currently in the wallet I left at home?",
-    "What is the title of the biography no one has written about me?",
+    "How many grains of sand on one beach?",
+    "What was the weight of one unnamed apple?",
+    "How many stars are visible from one town?",
+    "What was the height of one unnamed tree?",
+    "How many words were in one private chat yesterday?",
+    "What was the exact pitch of one unrecorded song?",
+    "How many bees were in one particular hive?",
+    "What is the temperature of one empty room next week?",
+    "How many flakes fell on one field in 1953?",
+    "What was the weight of one lost ring?",
+    "How many steps were on a staircase torn down in 1911?",
+    "What was the price of one stamp sold privately?",
+    "How many notes were in an unsung song?",
+    "What was the pattern of one burned coat?",
+    "How many guests at a wedding with no guest list?",
+    "What was the rainfall at one farm in 1944?",
+    "How many bricks are in one lost wall?",
+    "What was the size of one lost ring?",
+    "How many candles were on one birthday cake?",
+    "What is the edge count of one old coin?",
+    "How many bulbs were in a rebuilt theater?",
+    "What was the gauge of one snapped rope?",
+    "How many words were on one torn diary page?",
+    "What is the depth gain of one soil pit in 1961?",
+    "How many picks did one old loom make in an hour?",
+    "What was the fish count in one pond one day?",
+    "How many times did one clock chime unnamed?",
+    "What was the glaze of one jar from 1850?",
+    "How many knots were on one 1901 rope?",
+    "What was the ink shade on one 1889 letter?",
+    "How many panes were in one replaced window?",
+    "What was the seam count of one quilt from 1975?",
 ]
 
 

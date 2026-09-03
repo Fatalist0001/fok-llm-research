@@ -1,0 +1,24 @@
+# C2-reworked answerability: answerable vs unanswerable with matched length and
+# no first/second-person class signature (audit confound removed).
+name: fok_c2_answerable
+seed: 42
+model_path: data/models/Qwen3.5-2B
+layers: all
+max_new_tokens: 48
+temperature: 0.0
+dtype: bfloat16
+device: cuda
+dataset: answerability
+dataset_config:
+  capture_B: true
+  capture_C: true
+  b_tokens: 8
+train_ratio: 0.6
+val_ratio: 0.2
+representation: last_token
+last_k: 4
+probe: logistic
+probe_C: 1.0
+probe_tune_C: true
+target: answerable
+results_dir: results

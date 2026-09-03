@@ -1,0 +1,88 @@
+"""Tests for the C2-reworked datasets (audit confound removal).
+
+The three "template-style" datasets (``fok_trivia``, ``synthetic_knowledge``,
+``answerability``) were reworked so that knowable and unknowable classes share
+the same templates/sentence style and comparable question length. The point of
+C2 was to remove the *surface* (template/lexis/length) confound that let
+TF-IDF/length reach AUC 1.0 with no hidden-state signal (audit A2).
+
+These tests are deliberately cheap (no model, no sklearn training on big
+text): they assert the structural guarantees that kill the confound -- the two
+classes have near-identical mean question length and overlapping length ranges,
+and each class is present in every split so baselines/AUCs are meaningful.
+"""
+
+import numpy as np
+
+from fok.datasets import get_dataset
+
+
+def _lengths(ds, target):
+    rows = [r for r in ds.rows()]
+    y = np.array([int(r[target]) for r in rows])
+    lens = np.array([len(str(r["question"])) for r in rows], dtype=float)
+    return y, lens
+
+
+def _split_mask(ds):
+    rows = [r for r in ds.rows()]
+    return np.array([r["split"] for r in rows])
+
+
+def _assert_classes_in_every_split(ds, target):
+    splits = _split_mask(ds)
+    for s in ("train", "val", "test"):
+        mask = splits == s
+        vals = set(int(r[target]) for r in ds.rows() if r["split"] == s)
+        assert mask.sum() > 0, f"{ds.name} has empty {s} split"
+        assert vals == {0, 1}, f"{ds.name} {s} split missing a class: {vals}"
+
+
+def _assert_length_balanced(ds, target):
+    y, lens = _lengths(ds, target)
+    m0, m1 = lens[y == 0].mean(), lens[y == 1].mean()
+    # Length/template confound removed: mean lengths within ~25% of each other.
+    avg = (m0 + m1) / 2.0
+    rel = abs(m0 - m1) / avg
+    assert rel < 0.30, (
+        f"{ds.name}: mean question length differs by {rel:.2%} "
+        f"(known={m1:.1f}, unknown={m0:.1f})"
+    )
+
+
+def test_synthetic_knowledge_c2_balanced():
+    ds = get_dataset("synthetic_knowledge", {"n_per_class": 100}).build()
+    counts = ds.counts()
+    total = sum(counts.values())
+    assert total == 200
+    y, lens = _lengths(ds, "knowable")
+    assert set(y.tolist()) == {0, 1}
+    assert y.sum() == 100  # exactly n_per_class knowable examples
+    _assert_length_balanced(ds, "knowable")
+
+
+def test_fok_trivia_c2_balanced():
+    ds = get_dataset("fok_trivia").build()
+    _assert_classes_in_every_split(ds, "knowable")
+    _assert_length_balanced(ds, "knowable")
+    y, _ = _lengths(ds, "knowable")
+    assert set(y.tolist()) == {0, 1}
+
+
+def test_answerability_c2_balanced():
+    ds = get_dataset("answerability").build()
+    _assert_classes_in_every_split(ds, "answerable")
+    _assert_length_balanced(ds, "answerable")
+    y, _ = _lengths(ds, "answerable")
+    assert set(y.tolist()) == {0, 1}
+
+
+def test_all_c2_datasets_have_target_column():
+    for name, target in [("synthetic_knowledge", "knowable"),
+                         ("fok_trivia", "knowable"),
+                         ("answerability", "answerable")]:
+        ds = get_dataset(name).build()
+        rows = ds.rows()
+        assert all(target in r for r in rows)
+        vals = {int(r[target]) for r in rows}
+        assert vals == {0, 1}

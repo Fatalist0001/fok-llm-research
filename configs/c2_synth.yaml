@@ -1,0 +1,25 @@
+# C2-reworked synthetic_knowledge: known/unknown from identical templates,
+# differing only in real vs invented-but-normal country entity.
+name: fok_c2_synth
+seed: 42
+model_path: data/models/Qwen3.5-2B
+layers: all
+max_new_tokens: 48
+temperature: 0.0
+dtype: bfloat16
+device: cuda
+dataset: synthetic_knowledge
+dataset_config:
+  n_per_class: 100
+  capture_B: true
+  capture_C: true
+  b_tokens: 8
+train_ratio: 0.6
+val_ratio: 0.2
+representation: last_token
+last_k: 4
+probe: logistic
+probe_C: 1.0
+probe_tune_C: true
+target: knowable
+results_dir: results
