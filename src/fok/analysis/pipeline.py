@@ -255,12 +255,45 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
         except Exception:
             return float("nan"), float("nan")
 
+    def _tfidf_exclusive_auc(tfidf_mat, y_true, tr_mask, te_mask, best_layer):
+        """B2: hidden-state AUC on test examples where TF-IDF is wrong/uncertain.
+
+        Fits TF-IDF on train, gets predictions on test, identifies hard examples
+        (predicted probability in [0.25, 0.75] or misclassified), then computes
+        hidden-state AUC on only those examples. This tests whether hidden states
+        capture signal beyond lexical features, even when overall TF-IDF AUC is high.
+        Returns (n_hard, hidden_auc_on_hard).
+        """
+        if tfidf_mat is None or te_mask.sum() < 6:
+            return 0, float("nan")
+        try:
+            clf = LogisticRegression(max_iter=2000)
+            clf.fit(tfidf_mat[tr_mask], y_true[tr_mask])
+            proba = clf.predict_proba(tfidf_mat[te_mask])[:, 1]
+            hard = (proba >= 0.25) & (proba <= 0.75)
+            n_hard = int(hard.sum())
+            if n_hard < 4:
+                return n_hard, float("nan")
+            te_idx = np.where(te_mask)[0]
+            hard_idx = te_idx[hard]
+            y_hard = y_true[hard_idx]
+            if len(np.unique(y_hard)) < 2:
+                return n_hard, float("nan")
+            hid_hard = X[hard_idx]
+            layer_data = hid_hard[:, best_layer]
+            if layer_data.ndim > 1:
+                layer_data = layer_data.mean(axis=1)
+            auc = roc_auc_score(y_hard, layer_data)
+            return n_hard, float(auc)
+        except Exception:
+            return 0, float("nan")
+
     res = []
     for tgt in candidate_targets(rows):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        hid_test, _li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        hid_test, _li, best_layer_idx, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
 
         len_val, len_test = _score_2d(length.reshape(-1, 1), "length")
 
@@ -277,6 +310,21 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
 
         hid_clean = float(hid_test) if not np.isnan(hid_test) else float("nan")
         beats_tf = not (np.isnan(hid_clean) or np.isnan(tf_test)) and hid_clean > tf_test
+
+        # B1: normalized advantage — when TF-IDF is near ceiling, denominator -> 0
+        # and the metric honestly becomes undefined (NaN).
+        norm_adv = float("nan")
+        if not (np.isnan(hid_clean) or np.isnan(tf_test)):
+            denom = 1.0 - tf_test
+            if denom > 1e-6:
+                norm_adv = (hid_clean - tf_test) / denom
+
+        # B2: hidden AUC on TF-IDF-hard examples
+        n_hard, hid_hard_auc = (0, float("nan"))
+        if tfidf is not None:
+            n_hard, hid_hard_auc = _tfidf_exclusive_auc(
+                tfidf, y, tr, te, best_layer_idx)
+
         res.append({
             "target": tgt,
             "n_train": int(tr.sum()),
@@ -294,6 +342,9 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
                 float(hid_clean - tf_test)
                 if not (np.isnan(hid_clean) or np.isnan(tf_test)) else float("nan")
             ),
+            "normalized_advantage": norm_adv,
+            "n_hard_tfidf": n_hard,
+            "hidden_auc_on_hard": hid_hard_auc,
         })
     if not res:
         return

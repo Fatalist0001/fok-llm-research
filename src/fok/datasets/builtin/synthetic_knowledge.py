@@ -17,6 +17,15 @@ ordinary phonotactics and comparable length, and both classes pair a country wit
 the same five attribute questions, so template/lexis/length should no longer
 separate the classes. The cross-validated TF-IDF/length baseline
 (``simple_baselines``) is the honest check.
+
+Effective N caveat (audit2 C2): with ``n_per_class=200`` and
+14 real × 5 attrs = 70 unique real combinations and
+12 invented × 5 attrs = 60 unique invented combinations, many examples are
+exact duplicates. The effective independent sample size is **at most 70 (real)
+or 60 (invented)**, not 200. This matters for permutation-test power: the
+null distribution is based on fewer independent draws than n_per_class suggests.
+Set ``n_per_class`` <= 60 to avoid duplicates entirely, or interpret
+permutation p-values with this caveat in mind.
 """
 
 from __future__ import annotations

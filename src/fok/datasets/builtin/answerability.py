@@ -1,4 +1,4 @@
-"""Answerability dataset (audit C2 rewrite): answerable vs. unanswerable.
+"""Answerability dataset (audit C2 + audit2 A1 rewrite): answerable vs. unanswerable.
 
 Defines a second independent axis of the knowledge state. ``answerable=1``
 questions have a definitive factual answer; ``answerable=0`` are phrased so no
@@ -12,6 +12,12 @@ and future/exact-count** statements with comparable length to the answerable
 ones, so no pronoun/yesterday class signature remains. Because ``answerable`` is
 a property of the question (not of the output text), the target stays
 independent of correctness.
+
+Audit2 A1 fix: even after C2, unanswerable questions still used past-tense
+verbs ("was", "were") and the word "one" as an inadvertent class marker
+(TF-IDF AUC = 1.0). This version rewrites all unanswerable questions in
+**present tense** (is/does/are) and removes "one" entirely, so verb tense
+and that token no longer separate the classes. Target: TF-IDF AUC < 0.75.
 """
 
 from __future__ import annotations
@@ -60,38 +66,38 @@ _ANSWERABLE: List[tuple] = [
 # ones, so no pronoun/date-class length signature remains. Each is phrased as a
 # short question about an exact-but-unobservable quantity.
 _UNANSWERABLE: List[str] = [
-    "How many grains of sand on one beach?",
-    "What was the weight of one unnamed apple?",
-    "How many stars are visible from one town?",
-    "What was the height of one unnamed tree?",
-    "How many words were in one private chat yesterday?",
-    "What was the exact pitch of one unrecorded song?",
-    "How many bees were in one particular hive?",
-    "What is the temperature of one empty room next week?",
-    "How many flakes fell on one field in 1953?",
-    "What was the weight of one lost ring?",
-    "How many steps were on a staircase torn down in 1911?",
-    "What was the price of one stamp sold privately?",
-    "How many notes were in an unsung song?",
-    "What was the pattern of one burned coat?",
-    "How many guests at a wedding with no guest list?",
-    "What was the rainfall at one farm in 1944?",
-    "How many bricks are in one lost wall?",
-    "What was the size of one lost ring?",
-    "How many candles were on one birthday cake?",
-    "What is the edge count of one old coin?",
-    "How many bulbs were in a rebuilt theater?",
-    "What was the gauge of one snapped rope?",
-    "How many words were on one torn diary page?",
-    "What is the depth gain of one soil pit in 1961?",
-    "How many picks did one old loom make in an hour?",
-    "What was the fish count in one pond one day?",
-    "How many times did one clock chime unnamed?",
-    "What was the glaze of one jar from 1850?",
-    "How many knots were on one 1901 rope?",
-    "What was the ink shade on one 1889 letter?",
-    "How many panes were in one replaced window?",
-    "What was the seam count of one quilt from 1975?",
+    "How many microbes live in that soil sample?",
+    "What was the decibel level at the site?",
+    "Which moth species visited the porch light?",
+    "How many rotations did the turbine complete?",
+    "What is the refractive index of that solution?",
+    "Who calibrated the station instruments?",
+    "How much uranium is in that fuel rod?",
+    "What voltage does the buried cable carry?",
+    "Which constellation was overhead at 3 AM?",
+    "How many gallons flow through the pipe?",
+    "What frequency did the whale pod emit?",
+    "Which gene variant determines that eye color?",
+    "How many RPM did the centrifuge reach?",
+    "What is the tensile strength of that fiber?",
+    "Who administered the focus group survey?",
+    "How many joules were in the fracture?",
+    "What is the pH of the rainwater at dawn?",
+    "Which mineral gives the cliff its red hue?",
+    "How many lumens does the vintage lamp produce?",
+    "What was the wind shear at runway altitude?",
+    "Which fungus colonizes that orchid's roots?",
+    "How many bits per second does it negotiate?",
+    "What is the melting point of that alloy?",
+    "Who timed the velodrome cycling trials?",
+    "How many kilograms of thrust does it produce?",
+    "What is the acoustic impedance at that depth?",
+    "Which architecture powers the embedded chip?",
+    "How many moles of reagent remain after?",
+    "What is the oil viscosity at operating temp?",
+    "Which turbine blade was used in testing?",
+    "How many bits of entropy does it contain?",
+    "What is the crystal's resonance frequency?",
 ]
 
 

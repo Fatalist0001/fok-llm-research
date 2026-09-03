@@ -10,9 +10,18 @@ These tests are deliberately cheap (no model, no sklearn training on big
 text): they assert the structural guarantees that kill the confound -- the two
 classes have near-identical mean question length and overlapping length ranges,
 and each class is present in every split so baselines/AUCs are meaningful.
+
+Audit2 C1: the TF-IDF test checks that a simple unigram TF-IDF classifier
+cannot perfectly separate the classes. Threshold is 0.85 for most datasets;
+synthetic_knowledge is exempt (structural confound from country names is
+unavoidable by design).
 """
 
 import numpy as np
+import pytest
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 from fok.datasets import get_dataset
 
@@ -86,3 +95,57 @@ def test_all_c2_datasets_have_target_column():
         assert all(target in r for r in rows)
         vals = {int(r[target]) for r in rows}
         assert vals == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# C1: TF-IDF lexical confound test
+# ---------------------------------------------------------------------------
+
+def _tfidf_auc_for_dataset(ds_name, target, threshold=0.85, n_per_class=None):
+    """Fit unigram TF-IDF + LogisticRegression on train, score on test.
+
+    Returns (tfidf_auc, n_train, n_test). Raises AssertionError if AUC >= threshold.
+    Synthetic_knowledge is exempt (structural confound from country names).
+    """
+    cfg = {"n_per_class": n_per_class} if n_per_class else None
+    ds = get_dataset(ds_name, cfg).build()
+    rows = list(ds.rows())
+    texts = [str(r.get("question", "") or "") for r in rows]
+    y = np.array([int(r[target]) for r in rows])
+    splits = np.array([r["split"] for r in rows])
+    tr = splits == "train"
+    te = splits == "test"
+
+    if tr.sum() < 5 or te.sum() < 3:
+        pytest.skip(f"too few train/test examples for {ds_name}")
+
+    vec = TfidfVectorizer(ngram_range=(1, 1), min_df=1, lowercase=True)
+    vec.fit([texts[i] for i in np.where(tr)[0]])
+    X_tfidf = vec.transform(texts).toarray()
+
+    clf = LogisticRegression(max_iter=2000)
+    clf.fit(X_tfidf[tr], y[tr])
+    proba = clf.predict_proba(X_tfidf[te])[:, 1]
+    auc = roc_auc_score(y[te], proba)
+    return auc, int(tr.sum()), int(te.sum())
+
+
+@pytest.mark.parametrize("ds_name,target,threshold", [
+    ("fok_trivia", "knowable", 0.85),
+    ("answerability", "answerable", 0.85),
+    ("synthetic_knowledge", "knowable", None),  # exempt: structural confound
+])
+def test_tfidf_auc_below_threshold(ds_name, target, threshold):
+    """TF-IDF AUC must be below threshold (or exempt for synthetic_knowledge).
+
+    This tests that the C2 rework actually removed the lexical confound.
+    If this fails, the dataset still has a surface-style leak that lets a
+    trivial text classifier separate classes without hidden-state signal.
+    """
+    if threshold is None:
+        pytest.skip("synthetic_knowledge exempt: country-name confound is structural")
+    auc, n_tr, n_te = _tfidf_auc_for_dataset(ds_name, target, threshold)
+    assert auc < threshold, (
+        f"{ds_name}: TF-IDF AUC = {auc:.3f} >= {threshold} "
+        f"(n_train={n_tr}, n_test={n_te}) — lexical confound not removed"
+    )
