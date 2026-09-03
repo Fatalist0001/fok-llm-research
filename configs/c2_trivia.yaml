@@ -1,6 +1,8 @@
 # C2-reworked fok_trivia: hand-matched known/unknown pairs sharing sentence
-# frames and comparable length (audit confound removed).
-name: fok_c2_trivia
+# frames and comparable length (audit confound removed). Expanded to ~184 pairs
+# (368 examples) so the test slice (~73) gives the permutation control power
+# (the original 20-pair version had n_test=6 and was underpowered, p=0.08).
+name: fok_c2_trivia_big
 seed: 42
 model_path: data/models/Qwen3.5-2B
 layers: all
