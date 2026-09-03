@@ -125,7 +125,7 @@ def _control(cfg, rows, features_dir, out_dir, artifacts, n_perm=200):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        real_auc, layer_used, _, tuned_c = _select_layer_by_val(X, y, tr, val, te, cfg)
+        real_auc, layer_used, _, tuned_c, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         nulls = []
         for _ in range(n_perm):
             ys = rng.permutation(y)
@@ -194,7 +194,7 @@ def _select_layer_by_val(X, y, tr, val, te, cfg):
         test_auc = float(
             roc_auc_score(y[te], pr.predict_proba(X[te][:, bi, :])[:, 1])
         )
-    return test_auc, bi, best_val, tuned_C
+    return test_auc, bi, best_val, tuned_C, pr
 
 
 # --------------------------------------------------------------------------- #
@@ -255,13 +255,14 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
         except Exception:
             return float("nan"), float("nan")
 
-    def _tfidf_exclusive_auc(tfidf_mat, y_true, tr_mask, te_mask, best_layer):
+    def _tfidf_exclusive_auc(tfidf_mat, y_true, tr_mask, te_mask, hid_probe):
         """B2: hidden-state AUC on test examples where TF-IDF is wrong/uncertain.
 
         Fits TF-IDF on train, gets predictions on test, identifies hard examples
-        (predicted probability in [0.25, 0.75] or misclassified), then computes
-        hidden-state AUC on only those examples. This tests whether hidden states
-        capture signal beyond lexical features, even when overall TF-IDF AUC is high.
+        (predicted probability in [0.25, 0.75] or misclassified), then applies
+        the already-trained hidden-state probe to those examples via
+        predict_proba(). This tests whether hidden states capture signal beyond
+        lexical features, even when overall TF-IDF AUC is high.
         Returns (n_hard, hidden_auc_on_hard).
         """
         if tfidf_mat is None or te_mask.sum() < 6:
@@ -279,11 +280,10 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
             y_hard = y_true[hard_idx]
             if len(np.unique(y_hard)) < 2:
                 return n_hard, float("nan")
+            # Use the trained probe's predict_proba on hard subset
             hid_hard = X[hard_idx]
-            layer_data = hid_hard[:, best_layer]
-            if layer_data.ndim > 1:
-                layer_data = layer_data.mean(axis=1)
-            auc = roc_auc_score(y_hard, layer_data)
+            proba_hard = hid_probe.predict_proba(hid_hard)[:, 1]
+            auc = roc_auc_score(y_hard, proba_hard)
             return n_hard, float(auc)
         except Exception:
             return 0, float("nan")
@@ -293,7 +293,7 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        hid_test, _li, best_layer_idx, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        hid_test, _li, best_layer_idx, _, hid_probe = _select_layer_by_val(X, y, tr, val, te, cfg)
 
         len_val, len_test = _score_2d(length.reshape(-1, 1), "length")
 
@@ -323,7 +323,7 @@ def _simple_baselines(cfg, rows, features_dir, out_dir, artifacts):
         n_hard, hid_hard_auc = (0, float("nan"))
         if tfidf is not None:
             n_hard, hid_hard_auc = _tfidf_exclusive_auc(
-                tfidf, y, tr, te, best_layer_idx)
+                tfidf, y, tr, te, hid_probe)
 
         res.append({
             "target": tgt,
@@ -376,7 +376,7 @@ def _timepoints(cfg, rows, features_dir, out_dir, artifacts):
         row = {"target": tgt}
         for tp in avail:
             X, _layers = load_hidden(features_dir, tp)
-            a, _li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+            a, _li, _, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
             row[f"auc_{tp}"] = float(a)
         res.append(row)
     path = out_dir / "timepoints.csv"
@@ -399,7 +399,7 @@ def _multidim(cfg, rows, features_dir, eval_dir, out_dir, artifacts):
         y = target_values(rows, tgt)
         if y is None:
             continue
-        a, li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        a, li, _, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         # correctness as a comparison axis: select its own layer by validation,
         # then score the chosen layer once on test (no reuse of the target's
         # test-selected layer).
@@ -496,7 +496,7 @@ def _pca_umap_clustering(cfg, rows, features_dir, out_dir, artifacts):
             continue
 
         # Select best layer by validation AUC (same logic as other analyses).
-        best_auc, best_li, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
+        best_auc, best_li, _, _, _ = _select_layer_by_val(X, y, tr, val, te, cfg)
         if np.isnan(best_auc):
             continue
         X_best = X[:, best_li, :]  # [n_examples, hidden_dim]
