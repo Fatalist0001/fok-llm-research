@@ -21,6 +21,7 @@ Research pipeline for probing "Feeling of Knowing" (FOK) in a dense LLM's per-la
 - Config is the single source of truth: `src/fok/config.py` `ExperimentConfig`. The YAML must be **flat keys matching the dataclass** (e.g. `model_path`, `dataset`, `layers`, `probe`, `probe_C`). Nested YAML blocks are silently ignored — a common mistake.
 - Stage modules: `extraction/collector` (runs model → writes `features/examples.csv` + `hidden_{A,B,C}.npy`), `evaluation/pipeline`, `analysis/pipeline`, `visualization/plots`, wired by `cli.py`.
 - Hidden states: index 0 = embedding, 1..N = per-block residual states; `resolve_layers('all')` expands to `n_layers+1`. Points: A = after question/before generation, B/C = after answer tokens (off by default; enable via `dataset_config.capture_B/C=true`).
+- **Textual/figure baseline control runs as part of `analyze` (default)** (`analysis/pipeline.py::_simple_baselines`): for each target it fits LogisticRegression on TF-IDF (uni-/bi-grams), question length, and category on the **same** train/val/test splits as the hidden probe. Writes `analysis/simple_baselines.csv` (columns hidden/tfidf/length/category test-AUC). No extra stage or flag needed — it's always produced with `fok analyze` / `fok run`.
 
 ## Probe targets (easy to get wrong)
 
